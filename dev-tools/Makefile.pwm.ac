@@ -1,0 +1,31 @@
+modules:
+	(cd ac && make)
+
+modules_install:
+	(cd ac && make modules_install)
+
+clean:
+	(cd ac && make clean)
+
+deploy:
+	mkdir -p /lib/modules/$(shell uname -r)/extra/
+	cp ac/ac_dimmer.ko /lib/modules/$(shell uname -r)/extra/
+	depmod -a
+
+stop:
+	rmmod ac_dimmer
+
+start:
+	modprobe ac_dimmer
+
+restart: stop start
+
+deploy-boot:
+	cp dev-tools/modules-load.d_mylife-home-pwm.conf /etc/modules-load.d/mylife-home-pwm.conf
+
+undeploy:
+	rmmod ac_dimmer && 0
+	rmmod ac_button && 0
+	rmmod ac_zc && 0
+	rm -f /lib/modules/$(shell uname -r)/extra/ac_button.ko
+	rm -f /etc/modules-load.d/mylife-home-pwm.conf
