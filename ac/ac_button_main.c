@@ -23,8 +23,6 @@
 #include <linux/math64.h>
 #include <linux/string.h>
 
-#include "ac_common.h"
-
 #define MIN_RANGE_COUNT 2
 
 static struct hrtimer hr_timer;

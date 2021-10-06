@@ -23,7 +23,6 @@
 #include <linux/math64.h>
 #include <linux/string.h>
 
-#include "ac_common.h"
 #include "ac_zc.h"
 
 static int ac_zc_id = -1;
