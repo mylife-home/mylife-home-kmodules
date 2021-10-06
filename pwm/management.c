@@ -54,7 +54,7 @@ static ssize_t value_store(struct device *dev, struct device_attribute *attr, co
 
   mutex_lock(&sysfs_lock);
 
-  const struct item_desc *desc = dev_get_drvdata(dev);
+  struct item_desc *desc = dev_get_drvdata(dev);
   if(!test_bit(FLAG_PWM, &desc->flags)) {
     status = -EIO;
   } else {
