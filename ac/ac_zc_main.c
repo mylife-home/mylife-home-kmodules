@@ -32,7 +32,7 @@ static int ac_zc_freq_counter = 0;
 static s64 ac_zc_freq_start;
 static int ac_zc_gpio_previous_value;
 
-struct ac_zc_cb_desc
+struct cb_desc
 {
 	int status; // 0 = disabled
 	void *cb_data;
@@ -41,15 +41,14 @@ struct ac_zc_cb_desc
 
 // TODO : resizable list ?
 #define ZC_DESCRIPTOR_SIZE 16
-static struct ac_zc_cb_desc zc_descriptors[ZC_DESCRIPTOR_SIZE];
+static struct cb_desc zc_descriptors[ZC_DESCRIPTOR_SIZE];
 
 // lock protects against ac_zc_register() / ac_zc_unregister()
-static DEFINE_MUTEX(ac_zc_descriptors_lock);
+static DEFINE_MUTEX(descriptors_lock);
 
-static ssize_t ac_zc_attr_show(struct class *class, struct class_attribute *attr, char *buf);
-static irqreturn_t ac_zc_irq_handler(int irq, void *dev_id);
-static int ac_zc_init(void);
-static void ac_zc_exit(void);
+static irqreturn_t irq_handler(int irq, void *dev_id);
+static int mod_init(void);
+static void mod_exit(void);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vincent TRUMPFF");
@@ -62,22 +61,22 @@ EXPORT_SYMBOL(ac_zc_register);
 EXPORT_SYMBOL(ac_zc_unregister);
 EXPORT_SYMBOL(ac_zc_freq);
 
-module_init(ac_zc_init);
-module_exit(ac_zc_exit);
+module_init(mod_init);
+module_exit(mod_exit);
 
 // return : id > 0 on success (to unregister), error < 0 on failure
 int ac_zc_register(int status, ac_zc_callback cb, void *cb_data)
 {
 	int ret;
 	unsigned int index;
-	struct ac_zc_cb_desc *desc;
+	struct cb_desc *desc;
 
 	if(status <= 0 || status > (AC_ZC_STATUS_ENTER | AC_ZC_STATUS_LEAVE))
 		return -EINVAL;
 	if(!cb)
 		return -EINVAL;
 
-	mutex_lock(&ac_zc_descriptors_lock);
+	mutex_lock(&descriptors_lock);
 
 	ret = -EBUSY; // no empty place in array
 	for(index = 0; index < ZC_DESCRIPTOR_SIZE; ++index)
@@ -94,7 +93,7 @@ int ac_zc_register(int status, ac_zc_callback cb, void *cb_data)
 		break;
 	}
 
-	mutex_unlock(&ac_zc_descriptors_lock);
+	mutex_unlock(&descriptors_lock);
 
 	return ret;
 }
@@ -104,11 +103,11 @@ int ac_zc_unregister(int id)
 	if(id <= 0 || id > ZC_DESCRIPTOR_SIZE)
 		return -EINVAL;
 
-	mutex_lock(&ac_zc_descriptors_lock);
+	mutex_lock(&descriptors_lock);
 
 	zc_descriptors[id-1].status = 0;
 
-	mutex_unlock(&ac_zc_descriptors_lock);
+	mutex_unlock(&descriptors_lock);
 
 	return 0;
 }
@@ -118,41 +117,41 @@ int ac_zc_freq(void)
 	return ac_zc_freq_value;
 }
 
-// Sysfs definitions for ac_zc class
-static struct class_attribute ac_zc_class_attrs[] =
+static ssize_t gpio_show(struct class *class, struct class_attribute *attr, char *buf)
 {
-	__ATTR(gpio, 0444, ac_zc_attr_show, NULL),
-	__ATTR(freq, 0444, ac_zc_attr_show, NULL),
-	__ATTR_NULL,
+	return sysfs_emit(buf, "%d\n", ac_zc_gpio);
+}
+
+static CLASS_ATTR_RO(gpio);
+
+static ssize_t freq_show(struct class *class, struct class_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d Hz\n", (ac_zc_freq_start == ktime_get_seconds()) ? ac_zc_freq_value : 0);
+}
+
+static CLASS_ATTR_RO(freq);
+
+static struct attribute *ac_zc_class_attrs[] =
+{
+	&class_attr_gpio.attr,
+	&class_attr_freq.attr,
+	NULL,
 };
+
+ATTRIBUTE_GROUPS(ac_zc_class);
 
 static struct class ac_zc_class =
 {
-	.name =        "ac_zc",
-	.owner =       THIS_MODULE,
-	.class_attrs = ac_zc_class_attrs,
+	.name =         "ac_zc",
+	.owner =        THIS_MODULE,
+	.class_groups = ac_zc_class_groups,
 };
 
-// Show attributes values for zero crossing detector
-ssize_t ac_zc_attr_show(struct class *class, struct class_attribute *attr, char *buf)
-{
-	ssize_t status;
-
-	if(strcmp(attr->attr.name, "gpio") == 0)
-		status = sprintf(buf, "%d\n", ac_zc_gpio);
-	else if(strcmp(attr->attr.name, "freq") == 0)
-		status = sprintf(buf, "%d Hz\n", (ac_zc_freq_start == ktime_get_seconds()) ? ac_zc_freq_value : 0);
-	else
-		status = -EIO;
-
-	return status;
-}
-
-irqreturn_t ac_zc_irq_handler(int irq, void *dev_id)
+irqreturn_t irq_handler(int irq, void *dev_id)
 {
 	s64 now_secs;
 	int gpio_value;
-	struct ac_zc_cb_desc *desc;
+	struct cb_desc *desc;
 	int index;
 	int status;
 
@@ -191,7 +190,7 @@ irqreturn_t ac_zc_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-int __init ac_zc_init(void)
+int __init mod_init(void)
 {
 	int status;
 	printk(KERN_INFO "AC zc v0.1 initializing.\n");
@@ -219,7 +218,7 @@ int __init ac_zc_init(void)
 	if(status < 0)
 		goto fail_after_gpio;
 
-	status = request_irq(ac_zc_irq, ac_zc_irq_handler, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING | IRQF_SHARED | IRQF_NO_THREAD, "ac_zc_gpio_irq", &ac_zc_class);
+	status = request_irq(ac_zc_irq, irq_handler, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING | IRQF_SHARED | IRQF_NO_THREAD, "ac_zc_gpio_irq", &ac_zc_class);
 	if(status < 0)
 		goto fail_after_gpio;
 
@@ -235,7 +234,7 @@ fail_safe:
 	return status;
 }
 
-void __exit ac_zc_exit(void)
+void __exit mod_exit(void)
 {
 	free_irq(ac_zc_irq, &ac_zc_class);
 	gpio_free(ac_zc_gpio);
