@@ -59,53 +59,21 @@ static DEFINE_MUTEX(sysfs_lock);
 
 static int dimmer_export(unsigned int gpio);
 static int dimmer_unexport(unsigned int gpio);
-static ssize_t dimmer_show(struct device *dev, struct device_attribute *attr, char *buf);
-static ssize_t dimmer_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size);
-static ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
-static ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
 
-static void ac_dimmer_zc_handler(int status, void *data);
+static void zc_handler(int status, void *data);
 static enum hrtimer_restart ac_dimmer_hrtimer_callback(struct hrtimer *timer);
-static int ac_dimmer_init(void);
-static void ac_dimmer_exit(void);
+static int mod_init(void);
+static void mod_exit(void);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vincent TRUMPFF");
 MODULE_DESCRIPTION("Driver for AC dimmer");
 
-module_init(ac_dimmer_init);
-module_exit(ac_dimmer_exit);
-
-/* Sysfs attributes definition for dimmers */
-static DEVICE_ATTR(value,   0644, dimmer_show, dimmer_store);
-
-static const struct attribute *ac_dimmer_dev_attrs[] =
-{
-	&dev_attr_value.attr,
-	NULL,
-};
-
-static const struct attribute_group ac_dimmer_dev_attr_group =
-{
-	.attrs = (struct attribute **) ac_dimmer_dev_attrs,
-};
-
-/* Sysfs definitions for ac_dimmer class */
-static struct class_attribute ac_dimmer_class_attrs[] =
-{
-	__ATTR_WO(export),
-	__ATTR_WO(unexport),
-	__ATTR_NULL,
-};
-static struct class ac_dimmer_class =
-{
-	.name =        "ac_dimmer",
-	.owner =       THIS_MODULE,
-	.class_attrs = ac_dimmer_class_attrs,
-};
+module_init(mod_init);
+module_exit(mod_exit);
 
 /* Show attribute values for dimmers */
-ssize_t dimmer_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t value_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	const struct dimmer_desc *desc = dev_get_drvdata(dev);
 	ssize_t status;
@@ -116,17 +84,14 @@ ssize_t dimmer_show(struct device *dev, struct device_attribute *attr, char *buf
 	}
 	else
 	{
-		if(strcmp(attr->attr.name, "value") == 0)
-			status = sprintf(buf, "%d\n", desc->value);
-		else
-			status = -EIO;
+		status = sysfs_emit(buf, "%d\n", desc->value);
 	}
 	mutex_unlock(&sysfs_lock);
 	return status;
 }
 
 /* Store attribute values for dimmers */
-ssize_t dimmer_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
+static ssize_t value_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct dimmer_desc *desc = dev_get_drvdata(dev);
 	ssize_t status;
@@ -154,10 +119,26 @@ ssize_t dimmer_store(struct device *dev, struct device_attribute *attr, const ch
 	return status ? : size;
 }
 
+static DEVICE_ATTR_RW(value);
+
+static struct attribute *dimmer_attrs[] = {
+	&dev_attr_value.attr,
+	NULL,
+};
+
+static const struct attribute_group dimmer_group = {
+	.attrs = dimmer_attrs,
+};
+
+static const struct attribute_group *dimmer_groups[] = {
+	&dimmer_group,
+	NULL
+};
+
 /* Export a GPIO pin to sysfs, and claim it for dimmer usage.
  * See the equivalent function in drivers/gpio/gpiolib.c
  */
-ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
+static ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
 {
 	long gpio;
 	int status;
@@ -189,10 +170,12 @@ done:
 	return status ? : len;
 }
 
+static CLASS_ATTR_WO(export);
+
 /* Unexport a dimmer GPIO pin from sysfs, and unreclaim it.
  * See the equivalent function in drivers/gpio/gpiolib.c
  */
-ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
+static ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
 {
 	long gpio;
 	int  status;
@@ -217,6 +200,25 @@ done:
 	return status ? : len;
 }
 
+static CLASS_ATTR_WO(unexport);
+
+static struct attribute *ac_dimmer_class_attrs[] =
+{
+	&class_attr_export.attr,
+	&class_attr_unexport.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(ac_dimmer_class);
+
+static struct class ac_dimmer_class =
+{
+	.name =         "ac_dimmer",
+	.owner =        THIS_MODULE,
+	.class_groups = ac_dimmer_class_groups,
+};
+
+
 /* Setup the sysfs directory for a claimed dimmer device */
 int dimmer_export(unsigned int gpio)
 {
@@ -229,14 +231,10 @@ int dimmer_export(unsigned int gpio)
 	desc = &dimmer_table[gpio];
 	desc->value = 0;
 	desc->gpio_value = 0;
-	dev = device_create(&ac_dimmer_class, NULL, MKDEV(0, 0), desc, "dimmer%d", gpio);
+	dev = device_create_with_groups(&ac_dimmer_class, NULL, MKDEV(0, 0), desc, dimmer_groups, "dimmer%d", gpio);
 	if(dev)
 	{
-		status = sysfs_create_group(&dev->kobj, &ac_dimmer_dev_attr_group);
-		if(status == 0)
-			printk(KERN_INFO "Registered device dimmer%d\n", gpio);
-		else
-			device_unregister(dev);
+		printk(KERN_INFO "Registered device dimmer%d\n", gpio);
 	}
 	else
 	{
@@ -336,7 +334,7 @@ enum hrtimer_restart ac_dimmer_hrtimer_callback(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-void ac_dimmer_zc_handler(int status, void *data)
+void zc_handler(int status, void *data)
 {
 	unsigned int gpio;
 	struct dimmer_desc *desc;
@@ -384,7 +382,7 @@ void ac_dimmer_zc_handler(int status, void *data)
 		hrtimer_start(&hr_timer, next_tick, HRTIMER_MODE_ABS);
 }
 
-int __init ac_dimmer_init(void)
+int __init mod_init(void)
 {
 	int status;
 	printk(KERN_INFO "AC dimmer v0.1 initializing.\n");
@@ -396,7 +394,7 @@ int __init ac_dimmer_init(void)
 	if(status < 0)
 		goto fail_no_class;
 
-	status = ac_zc_register(AC_ZC_STATUS_ENTER, ac_dimmer_zc_handler, NULL);
+	status = ac_zc_register(AC_ZC_STATUS_ENTER, zc_handler, NULL);
 	if(status < 0)
 		goto fail_zc_register;
 
@@ -411,7 +409,7 @@ fail_no_class:
 	return status;
 }
 
-void __exit ac_dimmer_exit(void)
+void __exit mod_exit(void)
 {
 	unsigned int gpio;
 	int status;
