@@ -18,14 +18,6 @@ static int item_export(unsigned int gpio);
 static int item_unexport(unsigned int gpio);
 static int item_export_locked(unsigned int gpio);
 static int item_unexport_locked(unsigned int gpio);
-static ssize_t attr_show(struct device *dev, struct device_attribute *attr, char *buf);
-static ssize_t attr_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size);
-static ssize_t attr_show_locked(struct device *dev, struct device_attribute *attr, char *buf);
-static ssize_t attr_store_locked(struct device *dev, struct device_attribute *attr, const char *buf, size_t size);
-static ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
-static ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
-static ssize_t delay_type_show(struct class *class, struct class_attribute *attr, char *buf);
-static ssize_t debug_dump_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
 
 static int mod_init(void);
 static void mod_exit(void);
@@ -41,93 +33,68 @@ MODULE_PARM_DESC(hw_delay_type, "Type of HW device used for delays (supported : 
 module_init(mod_init);
 module_exit(mod_exit);
 
-static DEVICE_ATTR(value, 0644, attr_show, attr_store);
-
-static const struct attribute *dev_attrs[] = {
-  &dev_attr_value.attr,
-  NULL,
-};
-
-static const struct attribute_group dev_item = {
-  .attrs = (struct attribute **) dev_attrs,
-};
-
-static struct class_attribute dev_class_attrs[] = {
-  __ATTR_WO(export),
-  __ATTR_WO(unexport),
-  __ATTR_RO(delay_type),
-  __ATTR_WO(debug_dump),
-  __ATTR_NULL,
-};
-
-static struct class dev_class = {
-  .name =        "dma_pwm",
-  .owner =       THIS_MODULE,
-  .class_attrs = dev_class_attrs,
-};
-
-ssize_t attr_show(struct device *dev, struct device_attribute *attr, char *buf) {
+static ssize_t value_show(struct device *dev, struct device_attribute *attr, char *buf) {
   ssize_t status;
 
   mutex_lock(&sysfs_lock);
-  status = attr_show_locked(dev, attr, buf);
+
+  const struct item_desc *desc = dev_get_drvdata(dev);
+  if(!test_bit(FLAG_PWM, &desc->flags)) {
+    status = -EIO;
+  } else {
+    status = sysfs_emit(buf, "%d\n", desc->value);
+  }
+
   mutex_unlock(&sysfs_lock);
   return status;
 }
 
-ssize_t attr_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size) {
+static ssize_t value_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size) {
   ssize_t status;
 
   mutex_lock(&sysfs_lock);
-  status = attr_store_locked(dev, attr, buf, size);
+
+  const struct item_desc *desc = dev_get_drvdata(dev);
+  if(!test_bit(FLAG_PWM, &desc->flags)) {
+    status = -EIO;
+  } else {
+
+    unsigned long value;
+    status = kstrtoul(buf, 0, &value);
+    if(status == 0)
+		{
+      if(value < 0) { value = 0; }
+      if(value > 100) { value = 100; }
+      desc->value = value;
+    }
+  }
+
   mutex_unlock(&sysfs_lock);
 
   if(status >= 0) {
     hw_update(0);
   }
 
-  return status;
+  return status ? : size;
 }
 
-ssize_t attr_show_locked(struct device *dev, struct device_attribute *attr, char *buf) {
-  const struct item_desc *desc = dev_get_drvdata(dev);
+static DEVICE_ATTR_RW(value);
 
-  if(!test_bit(FLAG_PWM, &desc->flags)) {
-    return -EIO;
-  }
+static struct attribute *pwm_attrs[] = {
+	&dev_attr_value.attr,
+	NULL,
+};
 
-  if(strcmp(attr->attr.name, "value") == 0) {
-    return snprintf(buf, PAGE_SIZE, "%d\n", desc->value);
-  }
+static const struct attribute_group pwm_group = {
+	.attrs = pwm_attrs,
+};
 
-  return -EIO;
-}
+static const struct attribute_group *pwm_groups[] = {
+	&pwm_group,
+	NULL
+};
 
-ssize_t attr_store_locked(struct device *dev, struct device_attribute *attr, const char *buf, size_t size) {
-  struct item_desc *desc = dev_get_drvdata(dev);
-
-  if(!test_bit(FLAG_PWM, &desc->flags)) {
-    return -EIO;
-  }
-
-  if(strcmp(attr->attr.name, "value") == 0) {
-
-    unsigned long value;
-    ssize_t status = kstrtoul(buf, 0, &value);
-    if(status) {
-      return status;
-    }
-
-    if(value < 0) { value = 0; }
-    if(value > 100) { value = 100; }
-    desc->value = value;
-    return size;
-  }
-
-  return -EIO;
-}
-
-ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len) {
+static ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len) {
   long gpio;
   int  status;
 
@@ -156,7 +123,9 @@ ssize_t export_store(struct class *class, struct class_attribute *attr, const ch
   return len;
 }
 
-ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len) {
+static CLASS_ATTR_WO(export);
+
+static ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len) {
   long gpio;
   int  status;
 
@@ -183,7 +152,9 @@ ssize_t unexport_store(struct class *class, struct class_attribute *attr, const 
   return len;
 }
 
-ssize_t delay_type_show(struct class *class, struct class_attribute *attr, char *buf) {
+static CLASS_ATTR_WO(unexport);
+
+static ssize_t delay_type_show(struct class *class, struct class_attribute *attr, char *buf) {
   switch(delay_type) {
   case DELAY_PCM:
     return strscpy(buf, "pcm\n", PAGE_SIZE);
@@ -195,7 +166,9 @@ ssize_t delay_type_show(struct class *class, struct class_attribute *attr, char 
   return -EFAULT;
 }
 
-ssize_t debug_dump_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len) {
+static CLASS_ATTR_RO(delay_type);
+
+static ssize_t debug_dump_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len) {
 
   // 'echo registers > debug_dump' add \n at the end
   if(strstr(buf, "registers")) {
@@ -216,6 +189,26 @@ ssize_t debug_dump_store(struct class *class, struct class_attribute *attr, cons
   return -EINVAL;
 }
 
+static CLASS_ATTR_RO(debug_dump);
+
+static struct attribute *dma_pwm_class_attrs[] =
+{
+	&class_attr_export.attr,
+	&class_attr_unexport.attr,
+	&class_attr_delay_type.attr,
+	&class_attr_debug_dump.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(dma_pwm_class);
+
+static struct class dma_pwm_class =
+{
+	.name =         "dma_pwm",
+	.owner =        THIS_MODULE,
+	.class_groups = dma_pwm_class_groups,
+};
+
 int item_export(unsigned int gpio) {
   int status;
 
@@ -232,14 +225,9 @@ int item_export_locked(unsigned int gpio) {
 
   desc = &item_table[gpio];
   desc->value = 0;
-  desc->dev = dev = device_create(&dev_class, NULL, MKDEV(0, 0), desc, "pwm%d", gpio);
+  desc->dev = dev = device_create_with_groups(&dma_pwm_class, NULL, MKDEV(0, 0), desc, pwm_groups, "pwm%d", gpio);
   if(!dev) {
     return -ENODEV;
-  }
-
-  if((status = sysfs_create_group(&dev->kobj, &dev_item)) < 0) {
-    device_unregister(dev);
-    return status;
   }
 
   printk(KERN_INFO "Registered device pwm%d\n", gpio);
@@ -287,12 +275,12 @@ int __init mod_init(void) {
     return status;
   }
 
-  if((status = class_register(&dev_class)) < 0) {
+  if((status = class_register(&dma_pwm_class)) < 0) {
     return status;
   }
 
   if((status = hw_init()) < 0) {
-    class_unregister(&dev_class);
+    class_unregister(&dma_pwm_class);
     return status;
   }
 
@@ -328,6 +316,6 @@ void __exit mod_exit(void) {
 
   hw_exit();
 
-  class_unregister(&dev_class);
+  class_unregister(&dma_pwm_class);
   printk(KERN_INFO "DMA PWM v1.0 unloaded.\n");
 }
