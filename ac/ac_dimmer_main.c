@@ -39,7 +39,7 @@ struct dimmer_desc
 {
 	int value;
 	int gpio_value;
-	ktime_t next_tick;     // timer tick at which next toggling should happen
+	u64 next_tick;     // timer tick at which next toggling should happen
 	unsigned long flags;   // only FLAG_ACDIMMER is used, for synchronizing inside module
 #define FLAG_ACDIMMER 1
 };
@@ -292,8 +292,8 @@ enum hrtimer_restart ac_dimmer_hrtimer_callback(struct hrtimer *timer)
 {
 	unsigned int gpio;
 	struct dimmer_desc *desc;
-	ktime_t now = ktime_get();
-	ktime_t next_tick = ktime_set(0,0);
+	u64 now = ktime_get_ns();
+	u64 next_tick = 0;
 
 	for(gpio=0; gpio<ARCH_NR_GPIOS; gpio++)
 	{
@@ -301,34 +301,34 @@ enum hrtimer_restart ac_dimmer_hrtimer_callback(struct hrtimer *timer)
 		if(!test_bit(FLAG_ACDIMMER, &desc->flags))
 			continue;
 
-		if(desc->next_tick.tv64 == 0)
+		if(desc->next_tick == 0)
 			continue;
 
 		// trigger
-		if(desc->next_tick.tv64 <= now.tv64)
+		if(desc->next_tick <= now)
 		{
 			if(desc->gpio_value == 0)
 			{
 				gpio_set_value(gpio, 1);
 				desc->gpio_value = 1;
-				desc->next_tick = ktime_add_ns(desc->next_tick, 300000);
+				desc->next_tick += 300000;
 			}
 			else
 			{
 				gpio_set_value(gpio, 0);
 				desc->gpio_value = 0;
 				// remove trigger
-				desc->next_tick = ktime_set(0,0);
+				desc->next_tick = 0;
 				continue;
 			}
 		}
 
 		// timer setup
-		if((next_tick.tv64 == 0) || (desc->next_tick.tv64 < next_tick.tv64))
-			next_tick.tv64 = desc->next_tick.tv64;
+		if((next_tick == 0) || (desc->next_tick < next_tick))
+			next_tick = desc->next_tick;
 	}
 
-	if(next_tick.tv64 > 0)
+	if(next_tick > 0)
 		hrtimer_start(&hr_timer, next_tick, HRTIMER_MODE_ABS);
 
 	return HRTIMER_NORESTART;
@@ -340,8 +340,8 @@ void zc_handler(int status, void *data)
 	struct dimmer_desc *desc;
 	int period_cent = 0;
 	int freq = ac_zc_freq();
-	ktime_t now = ktime_get();
-	ktime_t next_tick = ktime_set(0,0);
+	u64 now = ktime_get_ns();
+	u64 next_tick = 0;
 
 	if(freq > 0)
 		period_cent = (NSEC_PER_SEC / 100) / freq;
@@ -354,7 +354,7 @@ void zc_handler(int status, void *data)
 			continue;
 
 		// reset timer
-		desc->next_tick = ktime_set(0,0);
+		desc->next_tick = 0;
 
 		// full time on
 		if(desc->value == 100)
@@ -373,12 +373,12 @@ void zc_handler(int status, void *data)
 
 		// timer setup
 		// max 90 else it overlaps (timer delay ?)
-		desc->next_tick = ktime_add_ns(now, min(90, (100 - desc->value)) * period_cent);
-		if((next_tick.tv64 == 0) || (desc->next_tick.tv64 < next_tick.tv64))
-			next_tick.tv64 = desc->next_tick.tv64;
+		desc->next_tick = now + (min(90, (100 - desc->value)) * period_cent);
+		if((next_tick == 0) || (desc->next_tick < next_tick))
+			next_tick = desc->next_tick;
 	}
 
-	if(next_tick.tv64 > 0)
+	if(next_tick > 0)
 		hrtimer_start(&hr_timer, next_tick, HRTIMER_MODE_ABS);
 }
 
