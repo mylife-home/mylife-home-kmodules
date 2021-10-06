@@ -189,7 +189,7 @@ static ssize_t debug_dump_store(struct class *class, struct class_attribute *att
   return -EINVAL;
 }
 
-static CLASS_ATTR_RO(debug_dump);
+static CLASS_ATTR_WO(debug_dump);
 
 static struct attribute *dma_pwm_class_attrs[] =
 {
