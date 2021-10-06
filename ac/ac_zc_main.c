@@ -25,9 +25,6 @@
 #include "ac_common.h"
 #include "ac_zc.h"
 
-#define get_ktime_secs(ktime) (div_s64((ktime).tv64, NSEC_PER_SEC))
-#define get_now_secs() get_ktime_secs(ktime_get())
-
 static int ac_zc_gpio = -1;
 static int ac_zc_irq = -1;
 
@@ -145,7 +142,7 @@ ssize_t ac_zc_attr_show(struct class *class, struct class_attribute *attr, char 
 	if(strcmp(attr->attr.name, "gpio") == 0)
 		status = sprintf(buf, "%d\n", ac_zc_gpio);
 	else if(strcmp(attr->attr.name, "freq") == 0)
-		status = sprintf(buf, "%d Hz\n", (ac_zc_freq_start == get_now_secs()) ? ac_zc_freq_value : 0);
+		status = sprintf(buf, "%d Hz\n", (ac_zc_freq_start == ktime_get_seconds()) ? ac_zc_freq_value : 0);
 	else
 		status = -EIO;
 
@@ -183,7 +180,7 @@ irqreturn_t ac_zc_irq_handler(int irq, void *dev_id)
 	if(!gpio_value)
 		return IRQ_HANDLED;
 
-	now_secs = get_now_secs();
+	now_secs = ktime_get_seconds();
 	if(now_secs != ac_zc_freq_start)
 	{
 		ac_zc_freq_value = ac_zc_freq_counter;
@@ -201,7 +198,7 @@ int __init ac_zc_init(void)
 	printk(KERN_INFO "AC zc v0.1 initializing.\n");
 
 	ac_zc_gpio_previous_value = 0;
-	ac_zc_freq_start = get_now_secs();
+	ac_zc_freq_start = ktime_get_seconds();
 
 	status = class_register(&ac_zc_class);
 	if(status < 0)
