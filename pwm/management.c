@@ -35,10 +35,11 @@ module_exit(mod_exit);
 
 static ssize_t value_show(struct device *dev, struct device_attribute *attr, char *buf) {
   ssize_t status;
+  const struct item_desc *desc;
 
   mutex_lock(&sysfs_lock);
 
-  const struct item_desc *desc = dev_get_drvdata(dev);
+  desc = dev_get_drvdata(dev);
   if(!test_bit(FLAG_PWM, &desc->flags)) {
     status = -EIO;
   } else {
@@ -51,10 +52,11 @@ static ssize_t value_show(struct device *dev, struct device_attribute *attr, cha
 
 static ssize_t value_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t size) {
   ssize_t status;
+  struct item_desc *desc;
 
   mutex_lock(&sysfs_lock);
 
-  struct item_desc *desc = dev_get_drvdata(dev);
+  desc = dev_get_drvdata(dev);
   if(!test_bit(FLAG_PWM, &desc->flags)) {
     status = -EIO;
   } else {
@@ -219,7 +221,6 @@ int item_export(unsigned int gpio) {
 }
 
 int item_export_locked(unsigned int gpio) {
-  int status;
   struct item_desc *desc;
   struct device   *dev;
 
