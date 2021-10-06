@@ -73,53 +73,22 @@ static DEFINE_MUTEX(sysfs_lock);
 
 static int button_export(unsigned int gpio);
 static int button_unexport(unsigned int gpio);
-static ssize_t button_show(struct device *dev, struct device_attribute *attr, char *buf);
-static ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
-static ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len);
 
-static irqreturn_t ac_button_irq_handler(int irq, void *dev_id);
-static enum hrtimer_restart ac_button_hrtimer_callback(struct hrtimer *timer);
+static irqreturn_t irq_handler(int irq, void *dev_id);
+static enum hrtimer_restart hrtimer_callback(struct hrtimer *timer);
 
-static int ac_button_init(void);
-static void ac_button_exit(void);
+static int mod_init(void);
+static void mod_exit(void);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Vincent TRUMPFF");
 MODULE_DESCRIPTION("Driver for AC button");
 
-module_init(ac_button_init);
-module_exit(ac_button_exit);
-
-/* Sysfs attributes definition for buttons */
-static DEVICE_ATTR(value,   0444, button_show, NULL);
-
-static const struct attribute *ac_button_dev_attrs[] =
-{
-	&dev_attr_value.attr,
-	NULL,
-};
-
-static const struct attribute_group ac_button_dev_attr_group =
-{
-	.attrs = (struct attribute **) ac_button_dev_attrs,
-};
-
-/* Sysfs definitions for ac_button class */
-static struct class_attribute ac_button_class_attrs[] =
-{
-	__ATTR_WO(export),
-	__ATTR_WO(unexport),
-	__ATTR_NULL,
-};
-static struct class ac_button_class =
-{
-	.name =        "ac_button",
-	.owner =       THIS_MODULE,
-	.class_attrs = ac_button_class_attrs,
-};
+module_init(mod_init);
+module_exit(mod_exit);
 
 /* Show attribute values for buttons */
-ssize_t button_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t value_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	const struct button_desc *desc = dev_get_drvdata(dev);
 	ssize_t status;
@@ -130,19 +99,32 @@ ssize_t button_show(struct device *dev, struct device_attribute *attr, char *buf
 	}
 	else
 	{
-		if(strcmp(attr->attr.name, "value") == 0)
-			status = sprintf(buf, "%d\n", desc->value);
-		else
-			status = -EIO;
+			status = sysfs_emit(buf, "%d\n", desc->value);
 	}
 	mutex_unlock(&sysfs_lock);
 	return status;
 }
 
+static DEVICE_ATTR_RO(value);
+
+static struct attribute *button_attrs[] = {
+	&dev_attr_value.attr,
+	NULL,
+};
+
+static const struct attribute_group button_group = {
+	.attrs = button_attrs,
+};
+
+static const struct attribute_group *button_groups[] = {
+	&button_group,
+	NULL
+};
+
 /* Export a GPIO pin to sysfs, and claim it for button usage.
  * See the equivalent function in drivers/gpio/gpiolib.c
  */
-ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
+static ssize_t export_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
 {
 	long gpio;
 	int status;
@@ -167,7 +149,7 @@ ssize_t export_store(struct class *class, struct class_attribute *attr, const ch
 	if(status < 0)
 		goto fail_after_gpio;
 
-	status = request_irq(irq, ac_button_irq_handler, IRQ_TYPE_EDGE_BOTH/*IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING | IRQF_NO_THREAD*/, "ac_button_gpio_irq", desc);
+	status = request_irq(irq, irq_handler, IRQ_TYPE_EDGE_BOTH/*IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING | IRQF_NO_THREAD*/, "ac_button_gpio_irq", desc);
 	if(status < 0)
 		goto fail_after_gpio;
 
@@ -195,10 +177,12 @@ fail_safe:
   return status;
 }
 
+static CLASS_ATTR_WO(export);
+
 /* Unexport a button GPIO pin from sysfs, and unreclaim it.
  * See the equivalent function in drivers/gpio/gpiolib.c
  */
-ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
+static ssize_t unexport_store(struct class *class, struct class_attribute *attr, const char *buf, size_t len)
 {
 	long gpio;
 	int  status;
@@ -230,6 +214,24 @@ done:
 	return status ? : len;
 }
 
+static CLASS_ATTR_WO(unexport);
+
+static struct attribute *ac_button_class_attrs[] =
+{
+	&class_attr_export.attr,
+	&class_attr_unexport.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(ac_button_class);
+
+static struct class ac_button_class =
+{
+	.name =         "ac_button",
+	.owner =        THIS_MODULE,
+	.class_groups = ac_button_class_groups,
+};
+
 /* Setup the sysfs directory for a claimed button device */
 int button_export(unsigned int gpio)
 {
@@ -244,14 +246,10 @@ int button_export(unsigned int gpio)
 	desc->value = 0;
 	desc->gpio_previous_value = 0;
 	desc->interrupted_range_count = 0;
-	desc->dev = dev = device_create(&ac_button_class, NULL, MKDEV(0, 0), desc, "button%d", gpio);
+	desc->dev = dev = device_create_with_groups(&ac_button_class, NULL, MKDEV(0, 0), desc, button_groups, "button%d", gpio);
 	if(dev)
 	{
-		status = sysfs_create_group(&dev->kobj, &ac_button_dev_attr_group);
-		if(status == 0)
-			printk(KERN_INFO "Registered device button%d\n", gpio);
-		else
-			device_unregister(dev);
+		printk(KERN_INFO "Registered device button%d\n", gpio);
 	}
 	else
 	{
@@ -294,7 +292,7 @@ int button_unexport(unsigned int gpio)
 	return status;
 }
 
-irqreturn_t ac_button_irq_handler(int irq, void *dev_id)
+irqreturn_t irq_handler(int irq, void *dev_id)
 {
 	unsigned int gpio;
 	struct button_desc *desc;
@@ -322,7 +320,7 @@ irqreturn_t ac_button_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-enum hrtimer_restart ac_button_hrtimer_callback(struct hrtimer *timer)
+enum hrtimer_restart hrtimer_callback(struct hrtimer *timer)
 {
 	unsigned int gpio;
 	struct button_desc *desc;
@@ -368,13 +366,13 @@ enum hrtimer_restart ac_button_hrtimer_callback(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-int __init ac_button_init(void)
+int __init mod_init(void)
 {
 	int status;
 	printk(KERN_INFO "AC button v0.1 initializing.\n");
 
 	hrtimer_init(&hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	hr_timer.function = &ac_button_hrtimer_callback;
+	hr_timer.function = &hrtimer_callback;
 
 	status = class_register(&ac_button_class);
 	if(status < 0)
@@ -387,7 +385,7 @@ fail_no_class:
 	return status;
 }
 
-void __exit ac_button_exit(void)
+void __exit mod_exit(void)
 {
 	unsigned int gpio;
 	int status;
