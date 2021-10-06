@@ -61,7 +61,7 @@ static int dimmer_export(unsigned int gpio);
 static int dimmer_unexport(unsigned int gpio);
 
 static void zc_handler(int status, void *data);
-static enum hrtimer_restart ac_dimmer_hrtimer_callback(struct hrtimer *timer);
+static enum hrtimer_restart hrtimer_callback(struct hrtimer *timer);
 static int mod_init(void);
 static void mod_exit(void);
 
@@ -218,7 +218,6 @@ static struct class ac_dimmer_class =
 	.class_groups = ac_dimmer_class_groups,
 };
 
-
 /* Setup the sysfs directory for a claimed dimmer device */
 int dimmer_export(unsigned int gpio)
 {
@@ -288,7 +287,7 @@ int dimmer_unexport(unsigned int gpio)
  * say, at the earliest dimmer signal toggling time) in order to
  * maintain the pressure on system latency as low as possible
  */
-enum hrtimer_restart ac_dimmer_hrtimer_callback(struct hrtimer *timer)
+enum hrtimer_restart hrtimer_callback(struct hrtimer *timer)
 {
 	unsigned int gpio;
 	struct dimmer_desc *desc;
@@ -388,7 +387,7 @@ int __init mod_init(void)
 	printk(KERN_INFO "AC dimmer v0.1 initializing.\n");
 
 	hrtimer_init(&hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	hr_timer.function = &ac_dimmer_hrtimer_callback;
+	hr_timer.function = &hrtimer_callback;
 
 	status = class_register(&ac_dimmer_class);
 	if(status < 0)
