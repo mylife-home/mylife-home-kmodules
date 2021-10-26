@@ -250,6 +250,7 @@ int button_export(unsigned int gpio)
 	if(dev)
 	{
 		printk(KERN_INFO "Registered device button%d\n", gpio);
+		status = 0;
 	}
 	else
 	{

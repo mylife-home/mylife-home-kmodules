@@ -234,6 +234,7 @@ int dimmer_export(unsigned int gpio)
 	if(dev)
 	{
 		printk(KERN_INFO "Registered device dimmer%d\n", gpio);
+		status = 0;
 	}
 	else
 	{
