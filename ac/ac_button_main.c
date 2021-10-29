@@ -259,6 +259,8 @@ int button_export(unsigned int gpio)
 	desc->value_kn = sysfs_get_dirent(dev->kobj.sd, "value");
 	if (!desc->value_kn) {
 		device_unregister(dev);
+		desc->dev = NULL;
+		
 		status = -ENODEV;
 		goto unlock;
 	}
@@ -289,7 +291,11 @@ int button_unexport(unsigned int gpio)
 	dev  = desc->dev;
 	if(dev)
 	{
+		sysfs_put(desc->value_kn);
 		device_unregister(dev);
+		desc->dev = NULL;
+		desc->value_kn = NULL;
+
 		printk(KERN_INFO "Unregistered device button%d\n", gpio);
 		status = 0;
 	}
@@ -297,6 +303,7 @@ int button_unexport(unsigned int gpio)
 	{
 		status = -ENODEV;
 	}
+
 
 	mutex_unlock(&sysfs_lock);
 
