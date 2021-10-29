@@ -38,6 +38,9 @@ struct button_desc
 	// corresponding sysfs device
 	struct device   *dev;
 
+	// value node (to notify)
+	struct kernfs_node *value_kn;
+
 	// irq number
 	int irq;
 
@@ -237,7 +240,7 @@ int button_export(unsigned int gpio)
 {
 	struct button_desc *desc;
 	struct device   *dev;
-	int             status;
+	int             status = 0;
 
 	mutex_lock(&sysfs_lock);
 
@@ -247,20 +250,29 @@ int button_export(unsigned int gpio)
 	desc->gpio_previous_value = 0;
 	desc->interrupted_range_count = 0;
 	desc->dev = dev = device_create_with_groups(&ac_button_class, NULL, MKDEV(0, 0), desc, button_groups, "button%d", gpio);
-	if(dev)
-	{
-		printk(KERN_INFO "Registered device button%d\n", gpio);
-		status = 0;
-	}
-	else
-	{
+
+	if(!dev) {
 		status = -ENODEV;
+		goto unlock;
 	}
+	
+	desc->value_kn = sysfs_get_dirent(dev->kobj.sd, "value");
+	if (!desc->value_kn) {
+		device_unregister(dev);
+		status = -ENODEV;
+		goto unlock;
+	}
+
+unlock:
 
 	mutex_unlock(&sysfs_lock);
 
-	if(status)
+	if(status) {
 		pr_debug("%s: button%d status %d\n", __func__, gpio, status);
+	} else {
+		printk(KERN_INFO "Registered device button%d\n", gpio);
+	}
+
 	return status;
 }
 
@@ -350,7 +362,7 @@ enum hrtimer_restart hrtimer_callback(struct hrtimer *timer)
 			// changing
 			desc->value = value;
 			// notify change
-			sysfs_notify(&desc->dev->kobj, NULL, "value");
+			sysfs_notify_dirent(desc->value_kn);
 		}
 
 		restart_timer = 1;
